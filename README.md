@@ -440,3 +440,4 @@ Key dependencies include:
 - intl: ^0.19.0
 
 For a complete list of dependencies, see the [pubspec.yaml](pubspec.yaml) file.
+
