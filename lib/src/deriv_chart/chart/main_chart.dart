@@ -178,13 +178,6 @@ class _ChartImplementationState extends BasicChartState<MainChart> {
 
   late final InteractiveLayerBehaviour _interactiveLayerBehaviour;
 
-  late final BaseChartDataPainter _seriesPainter;
-  final Map<String, ChartPainter> _annotationPainters =
-      <String, ChartPainter>{};
-
-  late final Listenable _seriesRepaint;
-  late final Listenable _annotationsRepaint;
-
   @override
   double get verticalPadding {
     if (canvasSize == null) {
@@ -208,23 +201,6 @@ class _ChartImplementationState extends BasicChartState<MainChart> {
   void initState() {
     super.initState();
 
-    _seriesPainter = BaseChartDataPainter(
-      epochToCanvasX: xAxis.xFromEpoch,
-      quoteToCanvasY: chartQuoteToCanvasY,
-      chartScaleModel: context.read<ChartScaleModel>(),
-    );
-
-    if (widget.annotations != null) {
-      for (final ChartAnnotation<ChartObject> annotation in widget.annotations!) {
-        _annotationPainters[annotation.id] = ChartPainter(
-          chartData: annotation,
-          epochToCanvasX: xAxis.xFromEpoch,
-          quoteToCanvasY: chartQuoteToCanvasY,
-          chartScaleModel: context.read<ChartScaleModel>(),
-        );
-      }
-    }
-
     // TODO(Ramin): mention in the document to customize or go with default.
     _interactiveLayerBehaviour =
         widget.interactiveLayerBehaviour ?? InteractiveLayerDesktopBehaviour();
@@ -235,19 +211,6 @@ class _ChartImplementationState extends BasicChartState<MainChart> {
 
     _setupController();
     _setupCrosshairController();
-
-    _seriesRepaint = Listenable.merge(<Listenable>[
-      topBoundQuoteAnimationController,
-      bottomBoundQuoteAnimationController,
-      crosshairZoomOutAnimation,
-    ]);
-
-    _annotationsRepaint = Listenable.merge(<Listenable>[
-      currentTickAnimation,
-      _currentTickBlinkAnimation,
-      topBoundQuoteAnimationController,
-      bottomBoundQuoteAnimationController,
-    ]);
   }
 
   @override
@@ -443,8 +406,6 @@ class _ChartImplementationState extends BasicChartState<MainChart> {
           }
 
           updateVisibleData();
-          _updatePainters();
-
           return ListenableProvider<YAxisNotifier>.value(
             value: _yAxisNotifier,
             child: Stack(
@@ -484,39 +445,6 @@ class _ChartImplementationState extends BasicChartState<MainChart> {
           );
         },
       );
-
-  void _updatePainters() {
-    final ChartTheme theme = context.watch<ChartTheme>();
-    final ChartConfig config = context.watch<ChartConfig>();
-
-    _seriesPainter
-      ..animationInfo = AnimationInfo(
-        currentTickPercent: currentTickAnimation.value,
-      )
-      ..chartConfig = config
-      ..theme = theme
-      ..rightBoundEpoch = xAxis.rightBoundEpoch
-      ..leftBoundEpoch = xAxis.leftBoundEpoch
-      ..topY = chartQuoteToCanvasY(widget.mainSeries.maxValue)
-      ..bottomY = chartQuoteToCanvasY(widget.mainSeries.minValue);
-
-    if (widget.overlaySeries != null) {
-      _seriesPainter.series = widget.overlaySeries!;
-    }
-
-    if (widget.annotations != null) {
-      for (final ChartAnnotation<ChartObject> annotation in widget.annotations!) {
-        _annotationPainters[annotation.id]
-          ?..animationInfo = AnimationInfo(
-              currentTickPercent: currentTickAnimation.value,
-              blinkingPercent: _currentTickBlinkAnimation.value,
-            )
-          ..chartData = annotation
-          ..chartConfig = config
-          ..theme = theme;
-      }
-    }
-  }
 
   // ignore: unused_element
   Widget _buildInteractiveLayer(BuildContext context, XAxisModel xAxis) =>
@@ -572,21 +500,39 @@ class _ChartImplementationState extends BasicChartState<MainChart> {
         loadingAnimationColor: widget.loadingAnimationColor,
       );
 
-  Widget _buildAnnotations() =>
-      Stack(fit: StackFit.expand, children: <Widget>[
-        if (widget.annotations != null)
-          ...widget.annotations!
-              .map(
-                (ChartData annotation) => RepaintBoundary(
-                  child: CustomPaint(
-                    key: ValueKey<String>(annotation.id),
-                    painter: _annotationPainters[annotation.id],
-                    repaint: _annotationsRepaint,
+  Widget _buildAnnotations() => MultipleAnimatedBuilder(
+        animations: <Animation<double>>[
+          currentTickAnimation,
+          _currentTickBlinkAnimation,
+          topBoundQuoteAnimationController,
+          bottomBoundQuoteAnimationController,
+        ],
+        builder: (BuildContext context, _) =>
+            Stack(fit: StackFit.expand, children: <Widget>[
+          if (widget.annotations != null)
+            ...widget.annotations!
+                .map(
+                  (ChartData annotation) => RepaintBoundary(
+                    child: CustomPaint(
+                      key: ValueKey<String>(annotation.id),
+                      painter: ChartPainter(
+                        animationInfo: AnimationInfo(
+                          currentTickPercent: currentTickAnimation.value,
+                          blinkingPercent: _currentTickBlinkAnimation.value,
+                        ),
+                        chartData: annotation,
+                        chartConfig: context.watch<ChartConfig>(),
+                        theme: context.watch<ChartTheme>(),
+                        epochToCanvasX: xAxis.xFromEpoch,
+                        quoteToCanvasY: chartQuoteToCanvasY,
+                        chartScaleModel: context.watch<ChartScaleModel>(),
+                      ),
+                    ),
                   ),
-                ),
-              )
-              .toList()
-      ]);
+                )
+                .toList()
+        ]),
+      );
 
   Widget _buildScrollToLastTickButton() => Material(
         type: MaterialType.circle,
@@ -600,18 +546,45 @@ class _ChartImplementationState extends BasicChartState<MainChart> {
       );
 
   // Main series and indicators on top of main series.
-  Widget _buildSeries(List<Series> series) => RepaintBoundary(
-        child: CustomPaint(
-          painter: _seriesPainter,
-          repaint: _seriesRepaint,
+  Widget _buildSeries(List<Series> series) => MultipleAnimatedBuilder(
+        animations: <Listenable>[
+          topBoundQuoteAnimationController,
+          bottomBoundQuoteAnimationController,
+          crosshairZoomOutAnimation,
+        ],
+        builder: (BuildContext context, Widget? child) => RepaintBoundary(
+          child: CustomPaint(
+            painter: BaseChartDataPainter(
+              animationInfo: AnimationInfo(
+                currentTickPercent: currentTickAnimation.value,
+              ),
+              series: series,
+              chartConfig: context.watch<ChartConfig>(),
+              theme: context.watch<ChartTheme>(),
+              epochToCanvasX: xAxis.xFromEpoch,
+              quoteToCanvasY: chartQuoteToCanvasY,
+              rightBoundEpoch: xAxis.rightBoundEpoch,
+              leftBoundEpoch: xAxis.leftBoundEpoch,
+              topY: chartQuoteToCanvasY(widget.mainSeries.maxValue),
+              bottomY: chartQuoteToCanvasY(widget.mainSeries.minValue),
+              chartScaleModel: context.watch<ChartScaleModel>(),
+            ),
+          ),
         ),
       );
 
-  Widget _buildMarkerArea() => MarkerArea(
-        markerSeries: widget.markerSeries!,
-        quoteToCanvasY: chartQuoteToCanvasY,
-        animationInfo: AnimationInfo(
-          currentTickPercent: currentTickAnimation.value,
+  Widget _buildMarkerArea() => MultipleAnimatedBuilder(
+        animations: <Listenable>[
+          currentTickAnimation,
+          topBoundQuoteAnimationController,
+          bottomBoundQuoteAnimationController
+        ],
+        builder: (BuildContext context, _) => MarkerArea(
+          markerSeries: widget.markerSeries!,
+          quoteToCanvasY: chartQuoteToCanvasY,
+          animationInfo: AnimationInfo(
+            currentTickPercent: currentTickAnimation.value,
+          ),
         ),
       );
 
