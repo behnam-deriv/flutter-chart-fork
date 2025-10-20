@@ -140,11 +140,45 @@ class BasicChartState<T extends BasicChart> extends State<T>
 
   bool _isTickAnimationPlaying = false;
 
+  late final YGridLinePainter _yGridLinePainter;
+  late final CustomPainter _yGridLabelPainter;
+  late final ChartDataPainter _chartDataPainter;
+  late final Listenable _chartDataRepaint;
+  late final Listenable _quoteGridRepaint;
+
   @override
   void initState() {
     super.initState();
     _setupInitialBounds();
     setupAnimations();
+
+    _yGridLinePainter = YGridLinePainter(
+      quoteToCanvasY: chartQuoteToCanvasY,
+      style: context.read<ChartTheme>().gridStyle,
+    );
+
+    _yGridLabelPainter = kIsWeb
+        ? YGridLabelPainterWeb(
+            pipSize: widget.pipSize,
+            quoteToCanvasY: chartQuoteToCanvasY,
+            style: context.read<ChartTheme>().gridStyle,
+          )
+        : YGridLabelPainter(
+            pipSize: widget.pipSize,
+            quoteToCanvasY: chartQuoteToCanvasY,
+            style: context.read<ChartTheme>().gridStyle,
+          );
+
+    _chartDataPainter = ChartDataPainter(
+      mainSeries: widget.mainSeries,
+      epochToCanvasX: xAxis.xFromEpoch,
+      quoteToCanvasY: chartQuoteToCanvasY,
+      chartScaleModel: context.read<ChartScaleModel>(),
+    );
+
+    _chartDataRepaint = Listenable.merge(getChartDataAnimations());
+    _quoteGridRepaint = Listenable.merge(getQuoteGridAnimations());
+
     _setupGestures();
     _updateChartPosition();
   }
@@ -362,45 +396,75 @@ class BasicChartState<T extends BasicChart> extends State<T>
 
           final List<double> gridLineQuotes =
               calculateGridLineQuotes(yAxisModel);
+
+          _updatePainters(gridLineQuotes);
+
           return Stack(
             fit: StackFit.expand,
             children: <Widget>[
               if (context.read<ChartConfig>().chartAxisConfig.showQuoteGrid)
                 _buildQuoteGridLine(gridLineQuotes),
               _buildChartData(),
-              if (context.read<ChartConfig>().chartAxisConfig.showQuoteGrid)
-                _buildQuoteGridLabel(gridLineQuotes),
             ],
           );
         },
       );
 
-  Widget _buildQuoteGridLine(List<double> gridLineQuotes) {
+  void _updatePainters(List<double> gridLineQuotes) {
+    final ChartTheme theme = context.watch<ChartTheme>();
+    final ChartConfig config = context.watch<ChartConfig>();
+
     final double calculatedLabelWidth = (gridLineQuotes.isNotEmpty)
         ? labelWidth(
             gridLineQuotes.first,
-            context.watch<ChartTheme>().gridStyle.yLabelStyle,
+            theme.gridStyle.yLabelStyle,
             widget.pipSize,
           )
         : 0;
+    YAxisConfig.instance.setLabelWidth(
+        calculatedLabelWidth + theme.gridStyle.labelHorizontalPadding * 2);
 
-    YAxisConfig.instance.setLabelWidth(calculatedLabelWidth +
-        context.watch<ChartTheme>().gridStyle.labelHorizontalPadding * 2);
+    _yGridLinePainter
+      ..gridLineQuotes = gridLineQuotes
+      ..style = theme.gridStyle
+      ..labelWidth = calculatedLabelWidth;
 
-    return MultipleAnimatedBuilder(
-      animations: getQuoteGridAnimations(),
-      builder: (BuildContext context, _) => RepaintBoundary(
-        child: CustomPaint(
-          painter: YGridLinePainter(
-            gridLineQuotes: gridLineQuotes,
-            quoteToCanvasY: chartQuoteToCanvasY,
-            style: context.watch<ChartTheme>().gridStyle,
-            labelWidth: calculatedLabelWidth,
-          ),
-        ),
-      ),
-    );
+    if (kIsWeb) {
+      final YGridLabelPainterWeb labelPainter =
+          _yGridLabelPainter as YGridLabelPainterWeb;
+      labelPainter
+        ..gridLineQuotes = gridLineQuotes
+        ..pipSize = widget.pipSize
+        ..style = theme.gridStyle;
+    } else {
+      final YGridLabelPainter labelPainter =
+          _yGridLabelPainter as YGridLabelPainter;
+      labelPainter
+        ..gridLineQuotes = gridLineQuotes
+        ..pipSize = widget.pipSize
+        ..style = theme.gridStyle;
+    }
+
+    _chartDataPainter
+      ..animationInfo = AnimationInfo(
+        currentTickPercent: currentTickAnimation.value,
+      )
+      ..mainSeries = widget.mainSeries
+      ..chartConfig = config
+      ..theme = theme
+      ..rightBoundEpoch = xAxis.rightBoundEpoch
+      ..leftBoundEpoch = xAxis.leftBoundEpoch
+      ..topY = chartQuoteToCanvasY(widget.mainSeries.maxValue)
+      ..bottomY = chartQuoteToCanvasY(widget.mainSeries.minValue);
   }
+
+  Widget _buildQuoteGridLine(List<double> gridLineQuotes) => RepaintBoundary(
+        child: CustomPaint(
+          painter: _yGridLinePainter,
+          foregroundPainter: _yGridLabelPainter,
+          repaint: _quoteGridRepaint,
+        ),
+      );
 
   /// Returns a list of animation controllers to animate the top quote grid.
   List<Listenable> getQuoteGridAnimations() => <Listenable>[
@@ -422,52 +486,13 @@ class BasicChartState<T extends BasicChart> extends State<T>
         currentTickAnimation,
       ];
 
-  Widget _buildQuoteGridLabel(List<double> gridLineQuotes) =>
-      MultipleAnimatedBuilder(
-        animations: getQuoteLabelAnimations(),
-        builder: (BuildContext context, _) => RepaintBoundary(
-          child: CustomPaint(
-            size: canvasSize!,
-            painter: kIsWeb
-                ? YGridLabelPainterWeb(
-                    gridLineQuotes: gridLineQuotes,
-                    pipSize: widget.pipSize,
-                    quoteToCanvasY: chartQuoteToCanvasY,
-                    style: context.watch<ChartTheme>().gridStyle,
-                  )
-                : YGridLabelPainter(
-                    gridLineQuotes: gridLineQuotes,
-                    pipSize: widget.pipSize,
-                    quoteToCanvasY: chartQuoteToCanvasY,
-                    style: context.watch<ChartTheme>().gridStyle,
-                  ),
-          ),
-        ),
-      );
-
   // Main series and indicators on top of main series.
-  Widget _buildChartData() => MultipleAnimatedBuilder(
-        animations: getChartDataAnimations(),
-        builder: (BuildContext context, _) => RepaintBoundary(
-          child: Opacity(
-            opacity: widget.opacity,
-            child: CustomPaint(
-              painter: ChartDataPainter(
-                animationInfo: AnimationInfo(
-                  currentTickPercent: currentTickAnimation.value,
-                ),
-                mainSeries: widget.mainSeries,
-                chartConfig: context.watch<ChartConfig>(),
-                theme: context.watch<ChartTheme>(),
-                epochToCanvasX: xAxis.xFromEpoch,
-                quoteToCanvasY: chartQuoteToCanvasY,
-                rightBoundEpoch: xAxis.rightBoundEpoch,
-                leftBoundEpoch: xAxis.leftBoundEpoch,
-                topY: chartQuoteToCanvasY(widget.mainSeries.maxValue),
-                bottomY: chartQuoteToCanvasY(widget.mainSeries.minValue),
-                chartScaleModel: context.watch<ChartScaleModel>(),
-              ),
-            ),
+  Widget _buildChartData() => RepaintBoundary(
+        child: Opacity(
+          opacity: widget.opacity,
+          child: CustomPaint(
+            painter: _chartDataPainter,
+            repaint: _chartDataRepaint,
           ),
         ),
       );
