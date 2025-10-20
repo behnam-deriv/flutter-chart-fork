@@ -493,13 +493,16 @@ class _ChartImplementationState extends BasicChartState<MainChart> {
       ..animationInfo = AnimationInfo(
         currentTickPercent: currentTickAnimation.value,
       )
-      ..series = widget.overlaySeries!
       ..chartConfig = config
       ..theme = theme
       ..rightBoundEpoch = xAxis.rightBoundEpoch
       ..leftBoundEpoch = xAxis.leftBoundEpoch
       ..topY = chartQuoteToCanvasY(widget.mainSeries.maxValue)
       ..bottomY = chartQuoteToCanvasY(widget.mainSeries.minValue);
+
+    if (widget.overlaySeries != null) {
+      _seriesPainter.series = widget.overlaySeries!;
+    }
 
     if (widget.annotations != null) {
       for (final ChartAnnotation<ChartObject> annotation in widget.annotations!) {
@@ -604,18 +607,11 @@ class _ChartImplementationState extends BasicChartState<MainChart> {
         ),
       );
 
-  Widget _buildMarkerArea() => MultipleAnimatedBuilder(
-        animations: <Listenable>[
-          currentTickAnimation,
-          topBoundQuoteAnimationController,
-          bottomBoundQuoteAnimationController
-        ],
-        builder: (BuildContext context, _) => MarkerArea(
-          markerSeries: widget.markerSeries!,
-          quoteToCanvasY: chartQuoteToCanvasY,
-          animationInfo: AnimationInfo(
-            currentTickPercent: currentTickAnimation.value,
-          ),
+  Widget _buildMarkerArea() => MarkerArea(
+        markerSeries: widget.markerSeries!,
+        quoteToCanvasY: chartQuoteToCanvasY,
+        animationInfo: AnimationInfo(
+          currentTickPercent: currentTickAnimation.value,
         ),
       );
 
