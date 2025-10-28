@@ -1,5 +1,3 @@
-// ignore_for_file: unnecessary_getters_setters
-
 import 'dart:math';
 
 import 'package:deriv_chart/src/deriv_chart/chart/helpers/functions/conversion.dart';
@@ -13,6 +11,11 @@ import 'functions/calc_no_overlay_time_gaps.dart';
 import 'gaps/gap_manager.dart';
 import 'gaps/helpers.dart';
 import 'grid/calc_time_grid.dart';
+import 'viewing_modes/constant_scroll_speed_state.dart';
+import 'viewing_modes/fit_data_state.dart';
+import 'viewing_modes/follow_current_tick_state.dart';
+import 'viewing_modes/stationary_state.dart';
+import 'viewing_modes/viewing_mode_state.dart';
 
 /// Will stop auto-panning when the last tick has reached to this offset from
 /// the [XAxisModel.leftBoundEpoch].
@@ -20,32 +23,6 @@ const double autoPanOffset = 30;
 
 /// Padding around data used in data-fit mode.
 const EdgeInsets defaultDataFitPadding = EdgeInsets.only(left: 16, right: 120);
-
-/// Modes that control chart's zoom and scroll behaviour without user
-/// interaction.
-enum ViewingMode {
-  /// Keeps current tick visible.
-  ///
-  /// This mode is enabled when `isLive` is `true` and current tick is visible.
-  /// It works by keeping the x coordinate of
-  /// `DateTime.now().millisecondsSinceEpoch` constant.
-  /// Meaning, if a line is drawn at `DateTime.now().millisecondsSinceEpoch`
-  /// on each frame in this mode, it will appear stationary.
-  followCurrentTick,
-
-  /// Keeps all of the data visible.
-  ///
-  /// This mode is used for contract details.
-  fitData,
-
-  /// Keeps scrolling left or right with constant speed.
-  ///
-  /// Negative speed scrolls the chart back, positive scrolls forward.
-  constantScrollSpeed,
-
-  /// Scroll and zoom only change with user gestures.
-  stationary,
-}
 
 /// State and methods of chart's x-axis.
 class XAxisModel extends ChangeNotifier {
@@ -162,23 +139,19 @@ class XAxisModel extends ChangeNotifier {
   late bool _isScrollBlocked = false;
   late int _nowEpoch;
   late int _rightBoundEpoch;
-  double _panSpeed = 0;
+  double panSpeed = 0;
 
   /// Difference in milliseconds between two consecutive candles/points.
   int get granularity => _granularity;
 
   /// Whether horizontal scroll is blocked.
-  bool get isScrollBlocked => _isScrollBlocked;
-
-  set isScrollBlocked(bool value) => _isScrollBlocked = value;
+  bool isScrollBlocked = false;
 
   /// Epoch value of the leftmost chart's edge.
   int get leftBoundEpoch => _shiftEpoch(rightBoundEpoch, -width!);
 
   /// Epoch value of the rightmost chart's edge. Including quote labels area.
-  int get rightBoundEpoch => _rightBoundEpoch;
-
-  set rightBoundEpoch(int value) => _rightBoundEpoch = value;
+  int rightBoundEpoch = 0;
 
   /// Current scrolling lower bound.
   int get _minRightBoundEpoch => _shiftEpoch(_minEpoch, _maxCurrentTickOffset);
@@ -218,18 +191,17 @@ class XAxisModel extends ChangeNotifier {
   /// Check [_currentViewingMode].
   bool get dataFitEnabled => _dataFitMode;
 
-  /// Current mode that controls chart's zooming and scrolling behaviour.
-  ViewingMode get _currentViewingMode {
-    if (_panSpeed != 0) {
-      return ViewingMode.constantScrollSpeed;
+  ViewingModeState get _viewingModeState {
+    if (panSpeed != 0) {
+      return ConstantScrollSpeedState();
     }
     if (_dataFitMode) {
-      return ViewingMode.fitData;
+      return FitDataState();
     }
     if (_followCurrentTick) {
-      return ViewingMode.followCurrentTick;
+      return FollowCurrentTickState();
     }
-    return ViewingMode.stationary;
+    return StationaryState();
   }
 
   /// Called on each tick's curve animation
@@ -239,8 +211,8 @@ class XAxisModel extends ChangeNotifier {
         ? _entries!.last.epoch
         : _nowEpoch + offsetEpoch;
 
-    if (_currentViewingMode == ViewingMode.followCurrentTick) {
-      _scrollTo(_rightBoundEpoch + offsetEpoch);
+    if (_viewingModeState is FollowCurrentTickState) {
+      scrollTo(rightBoundEpoch + offsetEpoch);
     }
   }
 
@@ -252,20 +224,8 @@ class XAxisModel extends ChangeNotifier {
     _nowEpoch = (_entries?.isNotEmpty ?? false)
         ? _entries!.last.epoch
         : _nowEpoch + elapsedMs;
-    // TODO(NA): Consider refactoring the switch with OOP pattern. https://refactoring.com/catalog/replaceConditionalWithPolymorphism.html
-    switch (_currentViewingMode) {
-      case ViewingMode.followCurrentTick:
-        _scrollTo(_rightBoundEpoch + elapsedMs);
-        break;
-      case ViewingMode.fitData:
-        fitAvailableData();
-        break;
-      case ViewingMode.constantScrollSpeed:
-        scrollBy(_panSpeed * elapsedMs);
-        break;
-      case ViewingMode.stationary:
-        break;
-    }
+
+    _viewingModeState.onNewFrame(this, elapsedMs);
 
     _lastEpoch = newNowTime;
   }
@@ -334,7 +294,7 @@ class XAxisModel extends ChangeNotifier {
     }
     _granularity = newGranularity;
     _msPerPx = _defaultMsPerPx;
-    _scrollTo(_maxRightBoundEpoch);
+    scrollTo(_maxRightBoundEpoch);
   }
 
   /// Updates chart's isLive property.
@@ -370,7 +330,7 @@ class XAxisModel extends ChangeNotifier {
 
       _msPerPx =
           (msDataDuration / pxTargetDataWidth).clamp(_minMsPerPx, _maxMsPerPx);
-      _scrollTo(_shiftEpoch(lastEntryEpoch, _dataFitPadding.right));
+      scrollTo(_shiftEpoch(lastEntryEpoch, _dataFitPadding.right));
     }
   }
 
@@ -392,7 +352,7 @@ class XAxisModel extends ChangeNotifier {
 
   /// Sets [panSpeed] if input not null, otherwise sets to `0`.
   // ignore: use_setters_to_change_properties
-  void pan(double panSpeed) => _panSpeed = panSpeed;
+  void pan(double panSpeed) => this.panSpeed = panSpeed;
 
   /// Enables autopanning when current tick is visible.
   void enableAutoPan() {
@@ -469,7 +429,7 @@ class XAxisModel extends ChangeNotifier {
 
   /// Called when user is scaling the chart.
   void onScaleUpdate(ScaleUpdateDetails details) {
-    if (_currentViewingMode == ViewingMode.followCurrentTick) {
+    if (_viewingModeState is FollowCurrentTickState) {
       _scaleWithNowFixed(details);
     } else {
       _scaleWithFocalPointFixed(details);
@@ -521,9 +481,9 @@ class XAxisModel extends ChangeNotifier {
     _clampRightBoundEpoch();
   }
 
-  void _scrollTo(int rightBoundEpoch) {
-    if (width != null && _rightBoundEpoch != rightBoundEpoch) {
-      _rightBoundEpoch = rightBoundEpoch;
+  void scrollTo(int rightBoundEpoch) {
+    if (width != null && this.rightBoundEpoch != rightBoundEpoch) {
+      this.rightBoundEpoch = rightBoundEpoch;
       _clampRightBoundEpoch();
       onScroll?.call();
       notifyListeners();
